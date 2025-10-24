@@ -1,0 +1,326 @@
+"use client"
+
+import { useEffect, useState } from "react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Download, Copy, Play, ImageIcon, ChevronUp, ChevronDown } from "lucide-react"
+
+interface Editor {
+  id: string
+  name: string
+  type: "video" | "graphic"
+}
+
+interface Upload {
+  id: string
+  file_name: string
+  caption: string | null
+  media_url: string
+  created_at: string
+  editor_id: string
+  editors: Editor
+}
+
+type SortField = "date" | "name" | "uploader" | "type"
+type SortOrder = "asc" | "desc"
+
+export function UploadsTable() {
+  const [uploads, setUploads] = useState<Upload[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [sortField, setSortField] = useState<SortField>("date")
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc")
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchUploads()
+  }, [])
+
+  const fetchUploads = async () => {
+    try {
+      setIsLoading(true)
+      const response = await fetch("/api/admin/all-uploads")
+      if (!response.ok) throw new Error("Failed to fetch uploads")
+      const data = await response.json()
+      setUploads(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load uploads")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === "asc" ? "desc" : "asc")
+    } else {
+      setSortField(field)
+      setSortOrder("asc")
+    }
+  }
+
+  const handleDownload = async (upload: Upload) => {
+    try {
+      const response = await fetch(upload.media_url)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = upload.file_name
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch (err) {
+      console.error("Download failed:", err)
+    }
+  }
+
+  const handleCopyCaption = (caption: string | null, uploadId: string) => {
+    if (!caption) return
+    navigator.clipboard.writeText(caption)
+    setCopiedId(uploadId)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  // Download CSV report from server for given type: "all" | "video" | "graphic"
+  const downloadCsv = async (type: string) => {
+    try {
+      const response = await fetch(`/api/admin/uploads-report?type=${encodeURIComponent(type)}`)
+      if (!response.ok) throw new Error("Failed to fetch CSV")
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
+      a.download = `uploads-report-${type}-${ts}.csv`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch (err) {
+      console.error("CSV download failed:", err)
+      alert("Failed to download CSV report")
+    }
+  }
+
+  const isVideo = (fileName: string) => {
+    const videoExtensions = [".mp4", ".webm", ".mov", ".avi", ".mkv"]
+    return videoExtensions.some((ext) => fileName.toLowerCase().endsWith(ext))
+  }
+
+  const getMediaPreview = (upload: Upload) => {
+    const video = isVideo(upload.file_name)
+    if (video) {
+      return (
+        <div className="relative w-12 h-12 bg-gray-900 rounded flex items-center justify-center">
+          <Play className="h-5 w-5 text-blue-400" />
+        </div>
+      )
+    }
+    return (
+      <div className="relative w-12 h-12 bg-gray-900 rounded flex items-center justify-center">
+        <ImageIcon className="h-5 w-5 text-purple-400" />
+      </div>
+    )
+  }
+
+  let filteredUploads = uploads.filter(
+    (upload) =>
+      upload.file_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      upload.caption?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      upload.editors.name.toLowerCase().includes(searchTerm.toLowerCase()),
+  )
+
+  // Sort uploads: always show videos first, then graphics/photos. Within each group, apply selected sort field/order.
+  filteredUploads = filteredUploads.sort((a, b) => {
+    const typePriority: Record<string, number> = { video: 0, graphic: 1 }
+
+    const aType = a.editors.type || "graphic"
+    const bType = b.editors.type || "graphic"
+
+    // Videos first
+    if (typePriority[aType] !== typePriority[bType]) {
+      return typePriority[aType] - typePriority[bType]
+    }
+
+    // If same type, use selected sort field
+    let aVal: string | number = ""
+    let bVal: string | number = ""
+
+    switch (sortField) {
+      case "date":
+        aVal = new Date(a.created_at).getTime()
+        bVal = new Date(b.created_at).getTime()
+        break
+      case "name":
+        aVal = a.file_name.toLowerCase()
+        bVal = b.file_name.toLowerCase()
+        break
+      case "uploader":
+        aVal = a.editors.name.toLowerCase()
+        bVal = b.editors.name.toLowerCase()
+        break
+      case "type":
+        // If sorting by type explicitly (though videos are already grouped), keep alphabetical within same type
+        aVal = a.editors.type
+        bVal = b.editors.type
+        break
+    }
+
+    if (typeof aVal === "string" && typeof bVal === "string") {
+      return sortOrder === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
+    }
+
+    return sortOrder === "asc" ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
+  })
+
+  const SortHeader = ({ field, label }: { field: SortField; label: string }) => (
+    <button
+      onClick={() => handleSort(field)}
+      className="flex items-center gap-1 font-medium text-gray-700 hover:text-gray-900 transition-colors"
+    >
+      {label}
+      {sortField === field &&
+        (sortOrder === "asc" ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />)}
+    </button>
+  )
+
+  if (isLoading) {
+    return <p className="text-gray-600">Loading uploads...</p>
+  }
+
+  if (error) {
+    return <p className="text-red-600">{error}</p>
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between w-full">
+          <div>
+            <CardTitle>All Uploads</CardTitle>
+            <CardDescription>Manage and download media from all editors and designers</CardDescription>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => downloadCsv("all")}
+              title="Download CSV for all uploads"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              CSV All
+            </Button>
+
+            <Button size="sm" variant="outline" onClick={() => downloadCsv("video")} title="Download CSV for reels">
+              <Download className="h-4 w-4 mr-2" />
+              CSV Reels
+            </Button>
+
+            <Button size="sm" variant="outline" onClick={() => downloadCsv("graphic")} title="Download CSV for photos">
+              <Download className="h-4 w-4 mr-2" />
+              CSV Photos
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Input
+          placeholder="Search by file name, description, or uploader..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="max-w-md"
+        />
+
+        {filteredUploads.length === 0 ? (
+          <p className="text-gray-600 py-8 text-center">No uploads found</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-3 px-4">
+                    <SortHeader field="type" label="Type" />
+                  </th>
+                  <th className="text-left py-3 px-4">Preview</th>
+                  <th className="text-left py-3 px-4">
+                    <SortHeader field="name" label="File Name" />
+                  </th>
+                  <th className="text-left py-3 px-4">Description</th>
+                  <th className="text-left py-3 px-4">
+                    <SortHeader field="uploader" label="Uploader" />
+                  </th>
+                  <th className="text-left py-3 px-4">
+                    <SortHeader field="date" label="Upload Date" />
+                  </th>
+                  <th className="text-left py-3 px-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUploads.map((upload) => (
+                  <tr key={upload.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                    <td className="py-3 px-4">
+                      <span
+                        className={`inline-block px-2 py-1 rounded text-xs font-medium ${
+                          upload.editors.type === "video"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-purple-100 text-purple-700"
+                        }`}
+                      >
+                        {upload.editors.type === "video" ? "Video" : "Photo"}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">{getMediaPreview(upload)}</td>
+                    <td className="py-3 px-4">
+                      <p className="text-gray-900 font-medium truncate max-w-xs">{upload.file_name}</p>
+                    </td>
+                    <td className="py-3 px-4">
+                      <p className="text-gray-600 truncate max-w-xs">{upload.caption || "-"}</p>
+                    </td>
+                    <td className="py-3 px-4">
+                      <p className="text-gray-900">{upload.editors.name}</p>
+                    </td>
+                    <td className="py-3 px-4">
+                      <p className="text-gray-600">{new Date(upload.created_at).toLocaleDateString()}</p>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDownload(upload)}
+                          title="Download media"
+                          className="h-8 w-8 p-0"
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCopyCaption(upload.caption, upload.id)}
+                          title="Copy description"
+                          className="h-8 w-8 p-0"
+                          disabled={!upload.caption}
+                        >
+                          <Copy className={`h-4 w-4 ${copiedId === upload.id ? "text-green-600" : ""}`} />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="text-sm text-gray-600 pt-4">
+          Showing {filteredUploads.length} of {uploads.length} uploads
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
